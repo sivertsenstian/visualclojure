@@ -1,7 +1,27 @@
 const vscode = require('vscode');
+const find = require('find');
+const fs = require('fs');
 const nreplClient = require('../nrepl/client');
 const nreplMsg = require('../nrepl/message');
+const exceptionParser = require('./exception_parser');
 const SESSION_TYPE = require('../nrepl/session_type');
+
+function trySetReplPort(state) {
+    let path = vscode.workspace.rootPath,
+        port = null;
+    return new Promise((resolve, _) => {
+        find.file(/\.nrepl-port$/, path, (files) => {
+            if(files.length > 0) {
+                fs.readFile(files[0], 'utf8', (err, data) => {
+                    if(!err) {
+                        state.port = parseFloat(data);
+                        resolve(state);
+                    }
+                });
+            }
+        });
+    });
+}
 
 function getNamespace(text) {
     let match = text.match(/^[\s\t]*\((?:[\s\t\n]*(?:in-){0,1}ns)[\s\t\n]+'?([\w.\-\/]+)[\s\S]*\)[\s\S]*/);
@@ -121,111 +141,63 @@ function getContentToPreviousBracket(block) {
 };
 
 function handleException(state, exceptions, isSelection = false) {
-    let errorHasBeenMarked = false,
-        editor = vscode.window.activeTextEditor,
+    let editor = vscode.window.activeTextEditor,
         filetypeIndex = (editor.document.fileName.lastIndexOf('.') + 1),
         filetype = editor.document.fileName.substr(filetypeIndex, editor.document.fileName.length);
+
     state.diagnosticCollection.clear();
+
     let exClient = nreplClient.create({
         host: state.hostname,
         port: state.port
     }).once('connect', function () {
         let msg = nreplMsg.stacktrace(state.session[filetype]),
-            errLine = null,
-            errChar = null,
-            errFileUri = editor.document.uri;
-
+            error = exceptionParser.error();
         exClient.send(msg, (results) => {
-            if (results.length === 2 && results[0].hasOwnProperty('status') && results[0].status[0] === "no-error" && results[1].status[0] === "done") {
-                let errorMsg = "Error when evaluating this expression..";
-                for(let r = 0; r < exceptions.length; r++) {
-                    let result = exceptions[r];
-                    if(result.hasOwnProperty('err')
-                      && result.err.indexOf("line") !== -1 
-                      && result.err.indexOf("column") !== -1) {
-                        errorHasBeenMarked = true;  
-                        let errorParts = result.err;
-                        if (errorParts.indexOf("starting at line") !== -1 && errorParts.indexOf("and column") !== -1) {
-                            errorParts = result.err.split(' ');
-                            errorMsg = result.err.substring(result.err.indexOf("clojure.lang.ExceptionInfo:") + 27, result.err.indexOf("starting"));
-                        } else if (errorParts.indexOf("at line") !== -1 && errorParts.indexOf("and column") === -1) {
-                            errorParts = result.err.substring(result.err.indexOf('{'), result.err.indexOf('}')).replace(/:/g, '').replace(/,/g, '').replace(/\r\n/, '').replace(/}/, '').split(' ');
-                            errorMsg = result.err.substring(result.err.indexOf("clojure.lang.ExceptionInfo:") + 27, result.err.indexOf("at line"));
-                        } else if (errorParts.indexOf(":line") !== -1 && errorParts.indexOf(":column") !== -1) {
-                            errorParts = result.err.substring(result.err.indexOf('{'), result.err.indexOf('}')).replace(/:/g, '').replace(/,/g, '').replace(/\r\n/, '').replace(/}/, '').split(' ');
-                            errorMsg = result.err.substring(result.err.indexOf("clojure.lang.ExceptionInfo:") + 27, result.err.indexOf("{"));
-                        }
-                        errLine = parseInt(errorParts[errorParts.indexOf("line") + 1], 10) - 1;
-                        errChar = parseInt(errorParts[errorParts.indexOf("column") + 1], 10) - 1;
-                    }
-                    if (result.hasOwnProperty('err') && result.err.indexOf("WARNING:") !== -1) {
-                        errorMsg += "\n" + result.err.substring(result.err.indexOf("WARNING:"), result.err.indexOf("at line"));
-                    }
-                    if (result.hasOwnProperty('err') && result.err.indexOf("TypeError:") !== -1) {
-                        errorMsg += "\n" + result.err;
-                    }
-
-                }
-                if(!errorHasBeenMarked) {
-                    state.diagnosticCollection.set(editor.document.uri, 
-                                                [new vscode.Diagnostic(new vscode.Range(editor.selection.start.line, 
-                                                editor.selection.start.character, 
-                                                editor.selection.start.line, 
-                                                editor.document.lineAt(editor.selection.start.line).text.length),
-                                errorMsg, vscode.DiagnosticSeverity.Error)]);
-                } else if(errLine >= 0  && errChar >= 0) {
-                    if(isSelection) {
-                        errLine = errLine + editor.selection.start.line;
-                        errChar = errChar + editor.selection.start.character;
-                    }
-                    let errPos = new vscode.Position(errLine, errChar),
-                        errLineLength = editor.document.lineAt(errLine).text.length;
-                    
-                    editor.selection = new vscode.Selection(errPos, errPos);
-                    state.diagnosticCollection.set(errFileUri, [new vscode.Diagnostic(new vscode.Range(errLine, errChar, errLine, errLineLength),
-                        errorMsg, vscode.DiagnosticSeverity.Error)]);
-                }
+            if (results.length === 2
+                && results[0].hasOwnProperty('status')
+                && results[0].status[0] === "no-error"
+                && results[1].status[0] === "done") {
+                error = exceptionParser.parse(exceptions);
             } else {
-                for(let r = 0; r < results.length; r++) {
-                    let result = results[r],
-                        errLine = result.line - 1,
-                        errChar = result.column - 1,
-                        errFile = result.file,
-                        errFileUri = null,
-                        errMsg = result.message,
-                        editor = vscode.window.activeTextEditor;
-
-                    if (errFile) {
-                        errFileUri = vscode.Uri.file(errFile);
-                    } else {
-                        errFileUri = editor.document.uri;
-                    }
-
-                    if(errLine >= 0  && errChar >= 0) {
-                        if(!editor.selection.isEmpty) {
-                            errLine = errLine + editor.selection.start.line;
-                            errChar = errChar + editor.selection.start.character;
-                        }
-
-                        let errPos = new vscode.Position(errLine, errChar);
-                        editor.selection = new vscode.Selection(errPos, errPos);
-                        let errLineLength = editor.document.lineAt(errLine).text.length;
-
-                        state.diagnosticCollection.set(errFileUri, [new vscode.Diagnostic(new vscode.Range(errLine, errChar, errLine, errLineLength),
-                            errMsg, vscode.DiagnosticSeverity.Error)]);
-                    }
-                }
+                error.class = results[0].class
+                error.cause = results[0].class
+                error.url = results[0].file;
+                error.line = results[0].line - 1;
+                error.char = results[0].column - 1;
+                error.message = results[1].message;
             }
-            exClient.end();
+            console.log("FINAL ERROR ->");
+            console.log(error);
+            let position = new vscode.Position(error.line, error.char),
+                length = editor.document.lineAt(error.line).text.length;
+
+            let range = new vscode.Range(error.line,
+                                         error.char,
+                                         error.line,
+                                         length),
+                diagnostics = [];
+                diagnostics.push(new vscode.Diagnostic(range,
+                                                       error.message,
+                                                       vscode.DiagnosticSeverity.Error));
+                for(var w = 0; w < error.warnings.length; w++) {
+                    diagnostics.push(new vscode.Diagnostic(range,
+                                                           error.warnings[w],
+                                                           vscode.DiagnosticSeverity.Warning));
+                }
+
+
+            editor.selection = new vscode.Selection(position, position);
+            state.diagnosticCollection.set(vscode.Uri.file(error.url), diagnostics);
         });
     });
 };
 
 function updateStatusbar(state) {
-    if (state.hostname) {
+    if (state.hostname && state.port) {
         state.statusbar_connection.text = "nrepl://" + state.hostname + ":" + state.port;
     } else {
-        state.statusbar_connection.text = "nrepl - no connection";
+        state.statusbar_connection.text = "nrepl - click to connect";
     }
     state.statusbar_type.text = state.session_type.statusbar;
     switch (state.session_type.id) {
@@ -239,8 +211,12 @@ function updateStatusbar(state) {
             state.statusbar_type.color = "rgb(192,192,192)";
             break;
     }
+    state.statusbar_connection.command = "visualclojure.connect";
+    state.statusbar_type.command = "visualclojure.toggleSession";
+
     state.statusbar_connection.show();
     state.statusbar_type.show();
+
 };
 
 
@@ -250,5 +226,6 @@ module.exports = {
     handleException,
     getContentToNextBracket,
     getContentToPreviousBracket,
-    updateStatusbar
+    updateStatusbar,
+    trySetReplPort
 };

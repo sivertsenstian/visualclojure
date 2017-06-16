@@ -45,14 +45,30 @@ function findSession(state, current, sessions) {
         });
 };
 
-function initialConnection(state) {
+function toggleSession(state) {
+    if(state.session_type.id === SESSION_TYPE.CLJ.id) {
+        if(state.session.cljs.length > 0) {
+            state.session_type = SESSION_TYPE.CLJS;
+            helpers.updateStatusbar(state);
+        }
+    } else if (state.session_type.id === SESSION_TYPE.CLJS.id) {
+        if(state.session.clj.length > 0) {
+            state.session_type = SESSION_TYPE.CLJ;
+            helpers.updateStatusbar(state);
+        }
+    }
+}
+
+async function initialConnection(state) {
+    //Try to set the port to an existing port in the opened dir (from .nrepl-port file)
+    await helpers.trySetReplPort(state);
     vscode.window.showInputBox({
-        placeHolder: "Enter existing nREPL hostname:port here...",
-        prompt: "Add port to nREPL if localhost, otherwise 'hostname:port'",
-        value: "localhost:",
+        placeHolder: "hostname:port to nREPL",
+        prompt: "hostname:port to existing nREPL e.g. localhost:12345",
+        value: state.hostname + ":" + (state.port === null ? "" : state.port),
         ignoreFocusOut: true
     })
-        .then(function (url) {
+    .then(function (url) {
             let [hostname, port] = url.split(':');
             state.hostname = hostname;
             state.port = port;
@@ -67,9 +83,10 @@ function initialConnection(state) {
                     lsSessionClient.end();
                 });
             });
-        });
+    });
 };
 
 module.exports = {
-    initialConnection
+    initialConnection,
+    toggleSession
 };

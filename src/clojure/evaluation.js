@@ -66,7 +66,7 @@ function evaluateExpression(state, document = {}) {
                         let msg = nreplMsg.evaluate(state.session[filetype], helpers.getNamespace(documentText), code);
                         evalClient.send(msg, function (results) {
                             for (var i = 0; i < results.length; i++) {
-                                let result = results[i];
+                                let result = results [i];
                                 if (result.hasOwnProperty('out')) {
                                     state.outputChannel.appendLine("side effects:");
                                     state.outputChannel.append(result.out);
@@ -74,11 +74,12 @@ function evaluateExpression(state, document = {}) {
                                     state.outputChannel.appendLine("Evaluation: success");
                                     state.outputChannel.appendLine("=>")
                                     state.outputChannel.appendLine((result.value.length > 0 ? result.value : "no result.."));
-                                } else if (result.ex) {
+                                } else if (result.ex || result.err) {
                                     state.outputChannel.appendLine("Evaluation: failure");
                                     state.outputChannel.appendLine("=>");
                                     state.outputChannel.appendLine(result.ex);
                                     helpers.handleException(state, results, true);
+                                    break;
                                 }
                             }
                             state.outputChannel.appendLine("----------- done -----------\n");
@@ -128,10 +129,12 @@ function evaluateFile(state, document = {}) {
                                     state.outputChannel.appendLine("Evaluation: success");
                                     state.outputChannel.appendLine("=>")
                                     state.outputChannel.appendLine((result.value.length > 0 ? result.value : "no result.."));
-                                } else if (result.ex) {
-                                    state.outputChannel.appendLine("Evaluation: failure");
-                                    state.outputChannel.appendLine("=>");
-                                    state.outputChannel.appendLine(result.ex);
+                                } else if (result.ex || result.err) {
+                                    if (result.ex) {
+                                        state.outputChannel.appendLine("Evaluation: failure");
+                                        state.outputChannel.appendLine("=>");
+                                        state.outputChannel.appendLine(result.ex);
+                                    }
                                     helpers.handleException(state, results);
                                 }
                             }
